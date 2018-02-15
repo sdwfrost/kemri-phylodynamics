@@ -1,0 +1,42 @@
+---
+title: "Requirements"
+author: "Simon Frost"
+date: "14 February 2018"
+output: html_document
+---
+
+
+Install most dependencies.
+
+```{r}
+devtools::install_github("sdwfrost/mevr")
+```
+
+Install others.
+
+```{r}
+# the following need to be installed separately
+setRepositories(ind=c(1,2))
+install.packages(c("ggplot2","ggimage","magick","ggtree"))
+```
+
+Test that all the packages load.
+
+```{r}
+library(ape) # reads in trees
+library(magrittr) # adds 'pipe' operator
+library(lubridate) # manipulates dates
+library(treedater) # makes clock trees
+library(skyspline) # infers population size
+library(phydynR) # fits complex population models
+library(diversitree) # fits 'mugration' models
+library(phyland) # fits island models
+library(adephylo) # provides distances to root
+library(phangorn) # parsimony models
+library(treeImbalance) # imbalance
+library(genieR) # parametric coalescent models
+library(ggplot2) # plotting
+library(ggtree) # plotting phylogenies
+library(magick)
+library(ggimage)
+```

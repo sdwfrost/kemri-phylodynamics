@@ -1,0 +1,419 @@
+---
+title: "Analysing viral phylogenies"
+author: "Simon Frost"
+date: "15 February 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+
+We will need many libraries to fit these data. As a shortcut to install many of them you can run the following - this assumes you already have the library `devtools` installed.
+
+```{r,eval=FALSE}
+devtools::install_github("sdwfrost/mevr")
+```
+
+```{r}
+library(ape) # reads in trees
+library(magrittr) # adds 'pipe' operator
+library(lubridate) # manipulates dates
+library(treedater) # makes clock trees
+library(skyspline) # infers population size
+library(phydynR) # fits complex population models
+library(diversitree) # fits 'mugration' models
+library(phyland) # fits island models
+library(adephylo) # provides distances to root
+library(phangorn) # parsimony models
+library(treeImbalance) # imbalance
+library(genieR) # parametric coalescent models
+# the following need to be installed separately
+# use setRepositories(ind=c(1,2)); install.packages(c("ggplot2","ggimage","magick","ggtree"))
+library(ggplot2) # plotting
+library(ggtree) # plotting phylogenies
+library(magick)
+library(ggimage)
+```
+
+## Read in tree
+
+I have already generated a maximum likelihood tree for you.
+
+```{r}
+treefile <- "ebov2.treefile"
+seqlen <- 18996
+tre <- unroot(read.tree(treefile))
+tipnames <- tre$tip.label
+```
+
+Check the tree has been read in properly.
+
+```{r}
+tre
+```
+
+## Get sampling dates
+
+In order to get a time-resolved tree, we need to extract the sampling dates.
+
+```{r}
+tipnames %>% strsplit(.,"\\|") %>% lapply(.,tail,1) %>% unlist %>% ymd %>% decimal_date -> decdates
+```
+
+
+So that we know which sequence has which date, we also name these dates.
+
+```{r}
+names(decdates) <- tipnames
+```
+
+The command `head` gives us the first few entries, and everything seems to look OK.
+
+```{r}
+head(decdates)
+```
+
+## Root to tip regression
+
+We can use R to perform root-to-tip regression as a quick check that there is enough temporal signal in the data. Note that the dates have to be in the same order as in the tip labels of the tree (which is true for the above code).
+
+```{r}
+tre.rtt <- rtt(tre,decdates)
+```
+
+To make the regression plot, we need to calculate the root to tip distances, as these aren't returned by `rtt`.
+
+```{r}
+tree.rd <- distRoot(tre.rtt)
+```
+
+The tip labels of the rooted tree are not in the same order as our original tree, so we have to match up the tip labels of the tree with the dates.
+
+```{r}
+tree.td <- decdates[match(tre.rtt$tip.label,names(decdates))]
+```
+
+Now we have the root-to-tip distances and the sampling times, we create a data frame and plot, adding in a straight-line fit.
+
+```{r}
+rdtd <- data.frame(RootDistance=tree.rd,SamplingTime=tree.td)
+p <- ggplot(rdtd,aes(x=SamplingTime,y=RootDistance))+geom_point(color="blue",alpha=0.5)+geom_smooth(method="lm",se=FALSE,fullrange=TRUE,color="red")+theme(legend.position = "none")
+p
+```
+
+The following code plots out a tree with the tips coloured by country using `ggtree`. The steps are as follows:
+
+- Generate a data frame with the tip label and host type.
+- Generate a `ggtree` and add on the dataframe using the `%<+%` operator
+- Plot using the following options:
+    - `theme_tree2`: puts in an x axis
+    - `geom_tippoint`: adds in points at the tips, in this case, with the shape and colour determined by the country
+    - `theme(legend.position="right")`: places the legend at the right
+    - `scale_colour_manual`: sets the colours for the different countries
+
+```{r}
+strsplit(tre.rtt$tip.label,"\\|") %>% lapply(.,"[",4) %>% unlist -> h
+dd <- data.frame(taxa=tre.rtt$tip.label,Country=h)
+g1 <- ggtree(tre.rtt) %<+% dd
+p <- g1+theme_tree2()+geom_tippoint(aes(shape=Country, color=Country), alpha=1.0)+theme(legend.position="right")+scale_color_manual(values=c(c("SLE"="darkorange1","GIN"="blue","LBR"="red","?"="green")))
+p
+```
+
+## Using treedater
+
+There appears to be a reasonable temporal signal, so we now move on to generate a time-stamped phylogeny using treedater. The options below have the following interpretation:
+
+- The first argument is the tree. If it is unrooted, as in the example below (c.f. `tre.rtt`), then `treedater` will try to find the best root.
+-  The second argument is the (decimal) sampling times. These do not have to be in the same order as the tree tip labels, but this has to be a named vector.
+- `s`: the sequence length
+- `minblen`: the minimum branch length (in units of time), in this case, 1 day
+- `abstol`: the threshold for determining convergence of the algorithm
+- `quiet`: whether to spool out parameter estimates during the run or not
+- `temporalConstraints`: whether to include temporal constraints
+- `numStart`: the number of starting values for parameter estimates.
+- `searchRoot`: the number of trees (ranked by goodness of fit by `rtt`) to search
+- `strictClock`: whether to use a strict clock rather than a relaxed clock
+- `ncpu`: the number of cores to use
+
+```{r}
+tre.dated <- dater(tre, decdates, s=seqlen, maxit = 100, minblen=1./365, abstol = .001, quiet = TRUE, temporalConstraints=TRUE, numStart=1, searchRoot=1, strictClock=FALSE, ncpu=1)
+```
+
+We can print out the time of the most recent common ancestor.
+
+```{r}
+date_decimal(tre.dated$timeOfMRCA)
+```
+
+We can now look at the new tree with tip dates on it.
+
+```{r}
+tre2 <- tre.dated
+class(tre2) <- "phylo"
+g <- ggtree(tre2,mrsd=date_decimal(max(decdates)))+theme_tree2()
+```
+
+```{r}
+g
+```
+
+## Changes in population size
+
+In order to calculate the population size from the tree, we use `skyspline`, which fits a non-parametric model to the 'growth rate' of the epidemic, and generates an estimate of the population size, rather than an effective population size. This requires an estimate of the death/recovery rate of the infection. Let us assume it is 15 days.
+
+```{r}
+tre.dated2 <- DatedTree(tre.dated, decdates, tol = 1/365)
+```
+
+
+```{r}
+t0 <- tre.dated2$maxSampleTime - tre.dated2$maxHeight
+tre.dated2.sky <- fit.skyspline.ml(tre.dated2, death_rate_guess = 1/(15/365), t0=t0, y0_guess=1,  R0guess = 2, np_range = 6)
+```
+
+The following extracts the population size (as `pop.size`) over time (as `times`) as a data frame.
+
+```{r}
+popsize <- tre.dated2.sky$demo.history
+```
+
+We can now plot out the population size dynamics.
+
+```{r}
+ggplot(popsize,aes(x=times,y=pop.size))+geom_line()+xlab("Year")+ylab("Population size")+scale_y_log10()
+```
+
+## Testing for deviations from the standard coalescent model
+
+It is difficult to interpret the population size estimates from approaches such as `skyspline` if the assumption that the population is well-mixed and homogenous is broken. One way we can test this assumption is to create randomised trees in which the sampling and coalescence times are fixed, but the tree is otherwise permuted to remove any underlying structure. We can then compute summary statistics for the given tree and compare them to the permuted trees; a large deviation may indicate that a simple coalescent model may be insufficient.
+
+The number of 'cherries' on the tree - a tip joined to another tip - is one measure of asymmetry. The lower the number of cherries, the more asymmetric the tree.
+
+```{r}
+tre.cherries <- Ncherries(tre2)
+tre.cherries
+```
+
+We now generate the permuted trees. For reproducibility purposes, it's often a good idea to set the random number seed when performing such analyses.
+
+```{r}
+set.seed(1234)
+simtrees <- list()
+ntrees <- 100
+for(i in 1:ntrees){
+  simtrees[[i]] <- getSimTree(tre2)
+}
+```
+
+As we have produced a list of trees, we can now use the `lapply` function to calculate the number of cherries for each tree in the list.
+
+```{r}
+simcherries <- lapply(simtrees,Ncherries) %>% unlist
+```
+
+An estimate of the p value can be obtained by calculating the proportion of simulations with the same or fewer cherries.
+
+```{r}
+sum(simcherries<=tre.cherries)/ntrees
+```
+
+Plotting this out reinforces the asymmetry of the tree as measured by cherries.
+
+```{r}
+ggplot(data.frame(Cherries=simcherries),aes(x=Cherries))+geom_histogram(binwidth=1,fill="blue")+xlab("Cherries")+ylab("Count")+geom_vline(xintercept=tre.cherries,colour="red",lwd=2)
+```
+
+Another measure of asymmetry is Sackin's index. We can calculate this using the following function.
+
+```{r}
+sack <- function(tr){
+  sackin(as.treeshape(tr))
+}
+```
+
+```{r}
+tre.sackin <- sack(tre2)
+```
+
+```{r}
+simsackin <- lapply(simtrees,sack) %>% unlist
+```
+
+
+```{r}
+sum(simsackin>=tre.sackin)/ntrees
+```
+
+```{r}
+ggplot(data.frame(Sackin=simsackin),aes(x=Sackin))+geom_histogram(binwidth=10,fill="blue")+xlab("Sackin's index")+ylab("Count")+geom_vline(xintercept=tre.sackin,colour="red",lwd=2)
+```
+
+
+The assumption of a simple coalescent model appears to be broken, There's more we can do in terms of trying to find exactly *how* the tree is different from the null, mostly by examining the dynamics of these statistics over time, but we won't go into this now.
+
+## Transmission between countries
+
+As we have three distinct subpopulations, we can investigate the relationship between them.
+
+### Plotting the tree
+
+We can colour the tree in by location.
+
+```{r}
+g2 <- g %<+% dd
+p <- g2+geom_tippoint(aes(shape=Country, color=Country), alpha=1.0)+theme(legend.position="right")#+scale_color_manual(values=c(c("Camel"="darkorange1","Human"="blue")))
+# ggsave("mers_treedater.png",p,width=8,height=5,units="in")
+p
+```
+
+
+
+### Migration rates using a structured coalescent
+
+```{r}
+tre3 <- tre2
+tre3$tip.label %>% strsplit(.,"\\|") %>% lapply(.,"[",4) %>% unlist %>% grep("?",.,fixed=TRUE) -> ms
+tre3 <- drop.tip(tre3,ms)
+fit <- phylandml(tre3, delimiter=NULL, regex="SLE|GIN|LBR",quiet=TRUE)
+```
+
+```{r}
+fit
+```
+
+The following incantation works out the probability of the root being in a specific country.
+
+```{r}
+fit$ace[which.max(node.depth(fit$bdt )),]
+```
+
+```{r}
+fit$fit
+```
+
+## Appendix
+
+For completeness, I provide code to calculate 'migrations' between camels and humans using parsimony and maximum likelihood, both of which give misleading results.
+
+### Migration rates via parsimony
+
+```{r}
+tre3$tip.label %>% strsplit(.,"\\|") %>% lapply(.,"[",4) %>% unlist -> l
+location.data <- matrix(c(substr(l,1,1)),dimnames=list(c(tre3$tip.label),NULL),nrow=length(tre3$tip.label),byrow=T)
+location.phydat <- phyDat(location.data,type="USER",levels=c("S","G","L"))
+```
+
+
+```{r}
+anc.sankoff <- ancestral.pars(tre3,location.phydat,type="MPR",cost=matrix(c(0,1,1,1,0,1,1,1,0),nrow=3,ncol=3))
+```
+
+```{r}
+sankoff(tre3,location.phydat,cost=matrix(c(0,1,1,1,0,1,1,1,0),nrow=3,ncol=3))
+```
+
+
+```{r}
+anc.sankoff.wrong.df <- data.frame(Camel=unname(unlist(lapply(anc.sankoff.wrong,"[",1))),Human=unname(unlist(lapply(anc.sankoff.wrong,"[",2))),node=names(anc.sankoff.wrong))
+anc.sankoff.right.df <- data.frame(Camel=unname(unlist(lapply(anc.sankoff.right,"[",1))),Human=unname(unlist(lapply(anc.sankoff.right,"[",2))),node=names(anc.sankoff.right))
+#anc.sankoff.wrong.df <- data.frame(Host=factor(unname(unlist(lapply(anc.sankoff.wrong,"[",1)))+1),node=names(anc.sankoff.wrong))
+```
+
+```{r,eval=FALSE}
+g4 <- g2
+pies <- nodepie(anc.sankoff.wrong.df,1:2,color=c("darkorange1","blue"),alpha=0.75)
+p <- inset(g4,pies,width=0.05,height=0.05)
+# ggsave("mers_pies.png",p,width=8,height=5,units="in")
+p
+```
+
+
+```{r,eval=FALSE}
+g4 <- g2
+pies <- nodepie(anc.sankoff.right.df,1:2,color=c("darkorange1","blue"),alpha=0.75)
+p <- inset(g4,pies,width=0.05,height=0.05)
+# ggsave("mers_pies_right.png",p,width=8,height=5,units="in")
+p
+```
+
+### Migration rates the WRONG way
+
+```{r}
+states <- as.integer(grepl("Human",host))
+names(states) <- tre2$tip.label
+head(states)
+```
+
+```{r}
+check.tree <- function (tree, ultrametric = TRUE, bifurcating = TRUE, node.labels = FALSE) 
+{
+    if (!inherits(tree, "phylo")) 
+        stop("'tree' must be a valid phylo tree")
+    #if (ultrametric && !is.ultrametric(tree)) 
+    #    stop("'tree' must be ultrametric")
+    if (any(tree$edge.length < 0)) 
+        stop("Negative branch lengths in tree")
+    if (bifurcating && (!is.binary.tree(tree) || any(tabulate(tree$edge[, 
+        1]) == 1))) 
+        stop("'tree must be bifurcating (no polytomies or unbranched nodes)'")
+    if (any(duplicated(tree$tip.label))) 
+        stop("Tree contains duplicated tip labels")
+    if (node.labels) {
+        if (is.null(tree$node.label)) 
+            tree$node.label <- sprintf("nd%d", seq_len(tree$Nnode))
+        else if (any(duplicated(tree$node.label))) 
+            stop("Tree contains duplicated node labels")
+    }
+    tree
+}
+assignInNamespace("check.tree",check.tree,"diversitree")
+```
+
+The following gives the rates of 'mugration':
+
+- q01: camels to humans
+- q10: humans to camels
+
+```{r}
+tre.mk2 <- make.mk2(tre2,states)
+tre.mk2.fit <- find.mle(tre.mk2,c(0.1,0.1),root=ROOT.FLAT)
+tre.mk2.fit$par
+```
+
+```{r}
+p <- ggplot(data.frame(Direction=c("CamelToHuman","HumanToCamel"),Rate=c(tre.mk2.fit$par[1],tre.mk2.fit$par[2])),aes(x=Direction,y=Rate))+geom_bar(stat="identity")
+# ggsave("mers_rates.png",p,width=8,height=5,units="in")
+p
+```
+
+This might suggest that the rate of human to camel transmission is roughly the same as the rate from camel to human!
+
+The following gives the probability of the root state being either in a camel or a human.
+
+```{r}
+mk2.root <- t(asr.marginal(tre.mk2,tre.mk2.fit$par))[1,]
+names(mk2.root) <- c("camel","human")
+mk2.root
+```
+
+This is counter to our biological intuition, where we believe camels are the reservoir. Why is the model getting 'tricked'?
+
+```{r}
+mk2.anc <- as.data.frame(t(asr.marginal(tre.mk2,tre.mk2.fit$par)))
+mk2.anc$node <- as.character(seq(275,547))
+head(mk2.anc)
+```
+
+
+```{r,eval=FALSE}
+g4 <- g2
+pies <- nodepie(mk2.anc,1:2,color=c("darkorange1","blue"),alpha=0.75)
+p <- inset(g4,pies,width=0.05,height=0.05)+theme(legend.position="right")+scale_color_manual(values=c(c("V1"="darkorange1","V2"="blue")))
+# ggsave("mers_pies_mk2.png",p,width=8,height=5,units="in")
+```
+
+
+

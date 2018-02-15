@@ -1,0 +1,39 @@
+---
+title: "Phylogenies in IQTREE"
+author: "Simon Frost"
+date: "10 February 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The following commands generate trees that I have found to be reasonable in practice. The command assumes a GTR model of nucleotide substitution (including optimisation of frequencies, `-mset GTR+FO`), but uses a model test (`-m TESTNEW`) in order to find the number of discrete rate categories (using a free rate model, `-mrate E,R`). The number of cores used is chosen using a benchmark (`-nt AUTO`), the output filestem is set (`-pre {filestem}`), a fast algorithm is used (`-fast`; this can be omitted for the default setting, or replaced with `-allnni` for a slower but more thorough tree search), and a 'safe' setting is used to avoid numerical underflow (`-safe`), which is a possibility using large datasets.
+
+The program will output a number of files; we will use `{filestem}.treefile` for our analyses.
+
+## MERS
+
+```{sh}
+iqtree -s mers.fas -m TESTNEW -mset GTR+FO -mrate E,R -nt AUTO -pre mers -fast -safe
+```
+
+## Lassa fever virus
+
+```{sh}
+iqtree -s lasv.fas -m TESTNEW -mset GTR+FO -mrate E,R -nt AUTO -pre lasv -fast -safe
+```
+
+
+## Zaire ebolavirus
+
+```{sh}
+iqtree -s ebov.fas -m TESTNEW -mset GTR+FO -mrate E,R -nt AUTO -pre ebov -fast -safe
+```
+
+## RSVB
+
+```{sh}
+iqtree -s rsvb.fas -m TESTNEW -mset GTR+FO -mrate E,R -nt AUTO -pre rsvb -fast -safe
+```

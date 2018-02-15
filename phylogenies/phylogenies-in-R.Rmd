@@ -1,0 +1,103 @@
+---
+title: "Quick phylogenies in R"
+author: "Simon Frost"
+date: "10 February 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ape) # reads/writes sequences, trees
+library(phangorn) # maximum likelihood models
+library(ggtree) # plotting phylogenies
+```
+
+## MERS
+
+### Read sequence data
+
+We use `read.dna` from the `ape` library to read in FASTA formatted sequences. When these sequences are aligned, by default, the sequences will be stored as a matrix.
+
+```{r}
+s.mers <- read.dna("mers.fas",format="fasta")
+```
+
+```{r}
+s.mers
+```
+
+
+### Generate a distance matrix
+
+```{r}
+d.mers <- dist.dna(s.mers,model="TN93")
+```
+
+### Make a neighbour-joining tree
+
+```{r}
+tre.nj.mers <- nj(d.mers)
+```
+
+### Find the best fitting model
+
+The following code performs a model testing procedure; the choice of rate models is not as extensive as for IQTREE, so we just compare four rate models (equal rates, an invariant class, gamma-distributed rates, or a combination of invariant sites and gamma-distributed rates).
+
+```{r}
+p.mers <- as.phyDat(s.mers)
+p.modeltest.mers <- modelTest(p.mers,tree=tre.nj.mers, model="GTR", FREQ=TRUE, multicore=TRUE, mc.cores=2)
+```
+
+```{r}
+p.modeltest.mers
+```
+
+The code below identifies the best model using AICc.
+
+```{r}
+bestmodel.mers <- p.modeltest.mers$Model[p.modeltest.mers$AICc==min(p.modeltest.mers$AICc)]
+bestmodel.mers
+```
+
+We extract the best model as a `pml` object using the following code; this is used in the next step to search for the best tree.
+
+```{r}
+env.mers <- attr(p.modeltest.mers,"env")
+pm.mers <- eval(get(bestmodel.mers,env=env.mers),env=env.mers)
+```
+
+## Maximum likelihood phylogeny reconstruction
+
+The following code optimises the phylogeny and the evolutionary model.
+
+```{r}
+pm.optim.mers <- optim.pml(pm.mers, optNni=TRUE, optBf=TRUE, optInv=TRUE, optGamma=TRUE, rearrangement="stochastic",control=pml.control(epsilon=1e-8, maxit=10, trace=0))
+```
+
+### Save tree
+
+```{r}
+
+```
+
+
+## Other datasets
+
+The below conducts all the steps in a single block of code, which I use for the other two datasets.
+
+```{r}
+fn <- "ebov.fas"
+ofn <- "ebov.tre"
+s <- read.dna("mers.fas",format="fasta")
+d <- dist.dna(s,model="TN93")
+tre.nj <- nj(d)
+p <- as.phyDat(s)
+p.modeltest <- modelTest(p,tree=tre.nj, model="GTR", FREQ=TRUE, multicore=TRUE, mc.cores=2)
+bestmodel <- p.modeltest$Model[p.modeltest$AICc==min(p.modeltest$AICc)]
+env <- attr(p.modeltest,"env")
+pm <- eval(get(bestmodel,env=env),env=env)
+pm.optim <- optim.pml(pm, optNni=TRUE, optBf=TRUE, optInv=TRUE, optGamma=TRUE, rearrangement="stochastic")
+```
